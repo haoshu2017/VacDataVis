@@ -1,0 +1,271 @@
+---
+title: "DataVisualization"
+author: "Haoshu"
+date: "6/25/2021"
+output:
+  html_document:
+    df_print: paged
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. 
+In this document, I presented the relationship between vaccinated rate between income level, incentive programs implemented by local government and incentive program mentions from local health deparment's twitter accounts. This document showcases an perfect example to under social issues/problems by leveraging multiple data sources (e.g. administrative data, U.S. census and Twitter)
+
+
+##load packages
+```{r}
+library(tidycensus)
+library(tidyverse)
+library(sf)
+library(mapview)
+library(leafem)
+options(tigris_use_cache = TRUE)
+
+```
+
+
+## Apply for Census's API
+```{r}
+# here is the link at apply for census API
+## http://api.census.gov/data/key_signup.html.
+
+census_api_key("587741d263a5873b848cd00efcf48d53f17156df", overwrite = TRUE, install = TRUE)
+
+```
+
+
+
+## load ACS 2019
+```{r pressure, echo=FALSE}
+v19 <- load_variables(2019, "acs5", cache = TRUE)
+
+# median age: B01002_001
+# median income: B21004_001
+# white population: C02003_003
+# total population: B01003_001
+# HS diploma: B29002_001
+```
+
+## extract total population estimates at county level 
+```{r}
+md_2019_pop<-get_acs(geography = "county",
+                     variables = "B01003_001",
+                     state = "MD",
+                     year = 2019,
+                     geometry = TRUE)
+
+
+```
+
+## extract median income estimates at county level
+```{r}
+md_2019_inc<-get_acs(geography = "county",
+                     variables = "B21004_001",
+                     state = "MD",
+                     year = 2019,
+                     geometry = TRUE)
+
+```
+
+
+####### draw a map  #########
+## draw a map with population estimates and median income
+```{r}
+mymap<-mapview(md_2019_pop,
+               zcol = "estimate", 
+               homebutton = FALSE) +
+        mapview(md_2019_inc,
+                zcol = "estimate",
+                homebutton = FALSE)
+mymap
+
+```
+
+
+## load policy data (including county-level vaccination rate, incentive equity programs)
+```{r}
+md_vax <- read_csv("md_vax.csv")
+
+```
+
+## creating a variable called equity scores 
+```{r}
+md_vax<-md_vax %>%
+        mutate(equity_scores = equity_special_needs + equity_time + equity_transportation + equity_walk_ins+incentives_business + incentives_individual)
+```
+
+
+## extract dataframes of vax rate & equity scores
+```{r}
+md_vaxrate<-md_vax %>%
+        select(GEOID, at_least_one)
+
+
+
+md_equity<-md_vax %>%
+        select(GEOID, equity_scores)
+
+```
+
+
+## extract geo coordinates from the sf file extracted from tidycensus
+```{r}
+md_geo<-md_2019_pop %>%
+        select(GEOID, geometry)
+
+```
+
+## add vaxrate, equity program data to geo dataframe
+```{r}
+md_geo_vaxrate <- merge(md_geo, md_vaxrate,by = "GEOID")
+
+md_geo_equity<-merge(md_geo, md_equity, by = "GEOID")
+
+```
+
+
+#### Prepare twitter text data and load it on the map ####
+```{r}
+
+load("/Users/haoshu/Desktop/SICSS/group project/countyvaxtweets_geoid.rda")
+head(countyvaxtweets_geoid)
+
+```
+
+## extract text of tweets from the twitter dataframe
+```{r}
+md_tweet<-countyvaxtweets_geoid %>%
+        select(GEOID, county, text)
+
+```
+
+
+## create a dictionary of incentive program mentions 
+```{r}
+incentive<-"grocery | groceries | free | giveaway | prize | food | drink | concert | festival | ice | lottery | cash | reward | beer | Juneteenth | summer | vaxcash | campaign | incentive | stadium | ticket | mobile" 
+
+## create a new flag variable indicating whether the tweets have incentives mentions
+for (i in 1:nrow(md_tweet)) {
+        md_tweet$isinctv[i]<-grepl(incentive, md_tweet$text[i])
+}  
+        
+
+```
+
+
+##  covert the logical variable (isinctv) to a numeric variable
+```{r}
+md_tweet$isinctv<-as.numeric(md_tweet$isinctv)
+class(md_tweet$isinctv)
+
+```
+
+## calculate the total number of incentive mentions by each county
+```{r}
+num_inctv<-md_tweet %>%
+        group_by(GEOID) %>%
+        summarise ( 
+                count_inctv= sum (isinctv, na.rm = TRUE)
+        )
+head(num_inctv)
+```
+
+#### merge the geo coordinates to the geo tweets dataframe
+```{r}
+md_geo_twt<-merge(md_geo, num_inctv, by = "GEOID", all.x = TRUE, all.y = TRUE)
+
+# replace NA with "0"s.  
+md_geo_twt$count_inctv[is.na(md_geo_twt$count_inctv)]<-0
+```
+
+## plot vax rate as dots on the map ###
+```{r}
+library(RColorBrewer)
+par(mar=c(3,4,2,2))
+display.brewer.all()
+```
+
+## plot a map indicating vaccinated rates by each county
+```{r}
+dot_vax<-st_centroid(md_geo_vaxrate) ## this will convert the vax rate into dots
+map_dotvax<-mapview(dot_vax, 
+                    zcol = "at_least_one", 
+                    cex="at_least_one", 
+                    col.regions =brewer.pal(9, "YlGnBu"),
+                    homebutton = FALSE,
+                    layer.name = "vaccination rate (at least one dose)")
+map_dotvax
+```
+
+## plot a map with number of equity programs 
+```{r}
+map_equity<-mapview(md_geo_equity,
+        zcol = "equity_scores",
+        homebutton = FALSE,
+        col.regions =brewer.pal(9, "Oranges"),
+        layer.name = "number of equity/incentive programs") 
+
+map_equity
+```
+
+
+## plot a map with equity layer and a map with vaccinated rate layer
+```{r}
+map_equity + map_dotvax
+```
+        
+
+## plot a map with median income and a map with vaccinated rate
+```{r}
+map_inc<-mapview(md_2019_inc,
+        zcol = "estimate",
+        col.regions =brewer.pal(9, "YlGn"),
+                    homebutton = FALSE,
+                    layer.name = "median income level")
+       
+## layer up vaccination rate with median income
+map_inc + map_dotvax
+```
+
+## plot a map with twitter mentions and a map with vaccinated rate
+```{r}
+map_twt<-mapview(md_geo_twt,
+                 zcol = "count_inctv", 
+                 homebutton = FALSE, 
+                 col.regions = brewer.pal(9, "PuRd"),
+                 layer.name = "incentive mentions on twitter")
+
+map_twt + map_dotvax
+```
+
+## plot a map with 2020 election results and a map with vaccinated rate 
+```{r}
+# create a election dataframe with geo coordinates
+md_elect<-md_vax %>%
+        select(GEOID, county, election) 
+md_elect$election[md_elect$election=="Biden"]<-1
+md_elect$election[md_elect$election=="Trump"]<-0
+md_elect$election<-factor(md_elect$election, levels = c(0,1), labels = c("Trump", "Biden"))
+
+# merge with geo coodinates
+md_geo_elect<-merge(md_geo, md_elect, by = "GEOID")
+
+
+# plot a map of election results in MD by county
+map_elect<-mapview(md_geo_elect,
+                   zcol = "election",
+                   homebutton = FALSE,
+                   col.regions = brewer.pal(9, "Spectral"),
+                   layer.name = "election results in 2020, red-Trump, blue-Biden")
+
+map_elect 
+
+# layer up with vaccined rates 
+map_elect + map_dotvax
+
+```
+
